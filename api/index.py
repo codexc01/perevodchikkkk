@@ -143,27 +143,14 @@ async def handle_direct_messages(message: Message) -> None:
 app = FastAPI(title="translator-bot-serverless")
 
 
-@app.get("/")
-async def root():
-    """проверка работоспособности сервиса"""
-    return {
-        "status": "ok",
-        "service": "telegram slang translator bot",
-        "ready": bool(bot and gemini_client),
-    }
-
-
-@app.get("/set_webhook")
-@app.get("/api/set_webhook")
-async def set_webhook(request: Request):
-    """быстрая привязка вебхука в один клик через браузер"""
+# вспомогательная функция установки вебхука
+async def _do_set_webhook(request: Request):
     if not bot:
         return JSONResponse(
             status_code=500,
             content={"error": "TELEGRAM_BOT_TOKEN не задан в переменных vercel"},
         )
 
-    # формируем публичный https url проекта vercel
     host = request.headers.get("x-forwarded-host") or request.headers.get("host")
     proto = request.headers.get("x-forwarded-proto", "https")
     webhook_url = f"{proto}://{host}/webhook"
@@ -177,11 +164,8 @@ async def set_webhook(request: Request):
     }
 
 
-@app.post("/webhook")
-@app.post("/api/webhook")
-@app.post("/api/index")
-async def process_webhook(request: Request):
-    """прием обновлений от telegram через webhook"""
+# вспомогательная функция обработки обновлений telegram
+async def _do_process_webhook(request: Request):
     if not bot:
         return Response(status_code=500)
 
@@ -192,4 +176,63 @@ async def process_webhook(request: Request):
         return {"ok": True}
     except Exception as exc:
         logger.error("ошибка обработки обновления webhook: %s", exc, exc_info=True)
-        return Response(status_code=200)  # всегда возвращаем 200 телеграму, чтобы он не спамил повторами
+        return Response(status_code=200)
+
+
+@app.get("/")
+@app.get("/api")
+@app.get("/api/index")
+@app.get("/api/index.py")
+async def root(request: Request):
+    """проверка статуса или установка вебхука"""
+    # если пользователь передал параметр ?action=set_webhook или зашел с пути set_webhook
+    original_path = (
+        request.headers.get("x-invoke-path")
+        or request.headers.get("x-matched-path")
+        or request.url.path
+    )
+    if "set_webhook" in original_path or request.query_params.get("action") == "set_webhook":
+        return await _do_set_webhook(request)
+
+    return {
+        "status": "ok",
+        "service": "telegram slang translator bot",
+        "ready": bool(bot and gemini_client),
+        "setup_webhook_url": f"{request.url.scheme}://{request.url.netloc}/set_webhook",
+    }
+
+
+@app.get("/set_webhook")
+@app.get("/api/set_webhook")
+async def set_webhook_route(request: Request):
+    """привязка вебхука через прямой url"""
+    return await _do_set_webhook(request)
+
+
+@app.post("/")
+@app.post("/webhook")
+@app.post("/api")
+@app.post("/api/webhook")
+@app.post("/api/index")
+@app.post("/api/index.py")
+async def process_webhook_route(request: Request):
+    """прием обновлений telegram по любому из путей"""
+    return await _do_process_webhook(request)
+
+
+@app.api_route("/{full_path:path}", methods=["GET", "POST"])
+async def catch_all_route(request: Request, full_path: str):
+    """универсальный перехватчик любых путей vercel rewrite"""
+    if request.method == "POST":
+        return await _do_process_webhook(request)
+
+    if "set_webhook" in full_path or request.query_params.get("action") == "set_webhook":
+        return await _do_set_webhook(request)
+
+    return {
+        "status": "ok",
+        "service": "telegram slang translator bot",
+        "ready": bool(bot and gemini_client),
+        "path": full_path,
+    }
+
