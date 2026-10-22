@@ -1,0 +1,16 @@
+# переменные окружения и секреты
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+
+# системные файлы и ключи
+.DS_Store
+*.pem
+*.key
