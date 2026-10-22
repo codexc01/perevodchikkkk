@@ -1,7 +1,9 @@
 import asyncio
 import hashlib
+import hmac
 import logging
 import os
+import re
 
 from aiogram import Bot, Dispatcher
 from aiogram.types import (
@@ -159,7 +161,15 @@ async def _do_set_webhook(request: Request):
             content={"error": "TELEGRAM_BOT_TOKEN не задан в переменных vercel"},
         )
 
-    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    # санитарная валидация host header для предотвращения host header injection / webhook hijacking
+    raw_host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+    host = raw_host.strip()
+    if not re.match(r"^[a-zA-Z0-9.-]+(:[0-9]+)?$", host):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "недопустимый заголовок host"},
+        )
+
     proto = request.headers.get("x-forwarded-proto", "https")
     webhook_url = f"{proto}://{host}/webhook"
 
@@ -182,11 +192,17 @@ async def _do_process_webhook(request: Request):
     if not bot:
         return Response(status_code=500)
 
-    # проверка подлинности отправителя: только запросы от серверов telegram с валидным секретом
+    # защита от memory exhaustion / dos: проверка размера тела запроса (максимум 64 кб)
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > 65536:
+        logger.warning("отклонен запрос с превышением лимита размера тела: %s байт", content_length)
+        return Response(status_code=413)
+
+    # защита от timing-атак: константное по времени сравнение hmac.compare_digest
     if WEBHOOK_SECRET:
-        secret_header = request.headers.get("x-telegram-bot-api-secret-token")
-        if secret_header != WEBHOOK_SECRET:
-            logger.warning("отклонен неавторизованный запрос к webhook без валидного секрета")
+        secret_header = request.headers.get("x-telegram-bot-api-secret-token") or ""
+        if not hmac.compare_digest(secret_header, WEBHOOK_SECRET):
+            logger.warning("отклонен неавторизованный запрос к webhook: несовпадение секрета")
             return Response(status_code=403)
 
     try:
