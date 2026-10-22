@@ -82,13 +82,21 @@ def _translate_to_slang_sync(client: genai.Client, text: str) -> str:
     return ""
 
 
+# секретный токен для проверки подлинности вебхука от telegram
+WEBHOOK_SECRET = (
+    hashlib.sha256(TELEGRAM_BOT_TOKEN.encode("utf-8")).hexdigest()[:32]
+    if TELEGRAM_BOT_TOKEN
+    else ""
+)
+
+
 @dp.inline_query()
 async def handle_inline_query(query: InlineQuery) -> None:
     """обработчик inline query для мгновенного сленгового перевода"""
     text = query.query.strip()
 
-    # валидация: меньше 2 символов — не делаем запрос к api
-    if len(text) < 2:
+    # валидация: меньше 2 или больше 300 символов — не делаем запрос к api для защиты от исчерпания лимитов
+    if len(text) < 2 or len(text) > 300:
         await query.answer(results=[], cache_time=300, is_personal=True)
         return
 
@@ -155,7 +163,12 @@ async def _do_set_webhook(request: Request):
     proto = request.headers.get("x-forwarded-proto", "https")
     webhook_url = f"{proto}://{host}/webhook"
 
-    await bot.set_webhook(url=webhook_url, drop_pending_updates=True)
+    # привязка с передачей криптографического секретного токена
+    await bot.set_webhook(
+        url=webhook_url,
+        secret_token=WEBHOOK_SECRET if WEBHOOK_SECRET else None,
+        drop_pending_updates=True,
+    )
     info = await bot.get_webhook_info()
     return {
         "ok": True,
@@ -168,6 +181,13 @@ async def _do_set_webhook(request: Request):
 async def _do_process_webhook(request: Request):
     if not bot:
         return Response(status_code=500)
+
+    # проверка подлинности отправителя: только запросы от серверов telegram с валидным секретом
+    if WEBHOOK_SECRET:
+        secret_header = request.headers.get("x-telegram-bot-api-secret-token")
+        if secret_header != WEBHOOK_SECRET:
+            logger.warning("отклонен неавторизованный запрос к webhook без валидного секрета")
+            return Response(status_code=403)
 
     try:
         data = await request.json()

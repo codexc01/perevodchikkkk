@@ -93,8 +93,8 @@ async def handle_inline_query(query: InlineQuery) -> None:
     """обработчик inline query для мгновенного сленгового перевода"""
     text = query.query.strip()
 
-    # валидация: меньше 2 символов не делаем запрос к api
-    if len(text) < 2:
+    # валидация: меньше 2 или больше 300 символов — не делаем запрос к api для защиты от исчерпания лимитов
+    if len(text) < 2 or len(text) > 300:
         await query.answer(results=[], cache_time=300, is_personal=True)
         return
 
